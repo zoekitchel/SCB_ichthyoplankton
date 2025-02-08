@@ -1,0 +1,389 @@
+---
+title: "RecFin Data Overview"
+author: "Zoë Kitchel"
+date: "`r Sys.Date()`"
+output: bookdown::html_document2
+---
+
+```{r setup,  include = FALSE}
+library(data.table)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+```
+
+
+## How we pulled data
+
+-   Downloaded RecFin data on January 15, 2025 from [recfin
+    website](https://reports.psmfc.org/recfin/f?p=601:1:13820808312939:INITIAL:::F_SELECTED_NODE:53&cs=3MMX4GLd8uuMBgMGOzscCAHvH_yUely3YcYGno0ODuz8s3Y2PDfjORospWxOA5ztpEkJ4jVH0U06YeC5-Kvv10g)
+
+Filters applied for download:
+
+-   Agency = California
+-   Mode = All (Note, for some reason, there is NO Beach/Bank in
+    2023-2024)
+-   Water Area = Ocean (\<= 3 miles)
+-   Subregion = South California
+-   Trip Type = All
+
+Thoughts
+
+-   Not sure why no beach/bank in 2023-2024
+    -   Beach bank catch estimates only based on online surveys, maybe
+        these haven't been integrated yet?
+    -   ALDOS (Angler License Directory Online Survey) is used to
+        collect effort data only for beach and bank fishing, night-time
+        fishing, and private access fishing that might otherwise go
+        unaccounted for.
+-   Should we include South district (San Diego, Orange, and LA
+    Counties) and Channel district (Ventura and Santa Barbara Counties)?
+    or just South?
+    -   Ideally, just LA County?
+-   Options for units are retained count, retained weight, released
+    count, released weight, released dead count, released dead weight,
+    total mortality count, total mortality weight
+    -   Likely, we're most interested in Total Mortality count and weight (and therefore that's what I include below)
+
+Helpful resources and tips
+
+- [NOAA on CDFW-ALDOS](https://www.fisheries.noaa.gov/s3/2023-09/CDFW-ALDOS-PR1-PR2-Certification-OST-2023-Redacted.pdf)
+-   RecFin data is a Catch Estimate
+-   1979 - 2003 = Marine Recreational Statistical Survey (MRFSS)
+-   2004 - Present = California Recreational Fisheries Survey (CRFS)
+-   1936 - Present = Commercial Passenger Fishing Vessel (CPFV)
+    operators are required to submit logbooks to CDFW that include
+    documentation of each fishing trip
+    -   Each logbook entry reports effort (\# anglers and \# hours
+        fished) and take (species and number fish caught)
+    -   CRFS uses CPFV effort data collected by samplers in the field
+        and logbook records to estimate CPFV effort
+
+## Data processing steps
+### I load the data from RecFin website, and merge all CSVs into one.
+
+```{r,  echo=FALSE, warning=FALSE}
+# List all CSV files in the directory that match CTE001-California pattern
+csv_files <- list.files(path = here::here("data", "RecFin"), pattern = "CTE001.*\\.csv$", full.names = TRUE)
+
+# Read and merge all CSV files
+recfin_data_merge <- rbindlist(lapply(csv_files, fread), fill = TRUE)
+
+# Write to a new file with updated year
+fwrite(recfin_data_merge, file = here::here("data","RecFin","recfin_data_merge.csv"))
+
+```
+
+### I make some small data adjustments to improve usability.
+
+```{r,  echo=FALSE, warning=FALSE}
+#Order factor for mode and add return to labels
+recfin_data_merge[,mode_label := factor(RECFIN_MODE_NAME, levels = c( "Beach/Bank", "Man-Made/Jetty", "Party/Charter Boats", "Private/Rental Boats"), labels = c( "Beach/\nBank", "Man-Made/\nJetty", "Party/\nCharter Boats", "Private/\nRental Boats"))]
+```
+
+### Start by visualizing all RecFin data from 2004-2024
+
+
+```{r,  echo=FALSE, warning=FALSE, fig.dim = c(7, 8), fig.cap = "RecFin total estimated fishing mortality by count. Note different y-axis scale for each district. Color specifies fishing mode, line type specifies fishing mode location."}
+#Add column that differentiates shore and boat
+recfin_data_merge[,shore_boat := ifelse(RECFIN_MODE_NAME %in% c("Party/Charter Boats", "Private/Rental Boats"),"Boat-based","Shore-based")]
+
+#Adjust factor order
+recfin_data_merge[,shore_boat := factor(shore_boat, levels = c("Shore-based","Boat-based"))]
+
+recfin_data_merge_total_mortality <- recfin_data_merge[,.(SUM_TOTAL_MORTALITY_NUM_ANNUAL = 
+                                                             sum(SUM_TOTAL_MORTALITY_NUM, na.rm = T),
+                                                            SUM_TOTAL_MORTALITY_MT_ANNUAL = 
+                                                             sum(SUM_TOTAL_MORTALITY_MT, na.rm = T)),
+                                                       by = .(RECFIN_YEAR, DISTRICT_NAME,RECFIN_MODE_NAME, shore_boat)]
+
+district_labels <- c("Channel District\n(Ventura and Santa Barbara Counties)",
+                     "South District\n(San Diego, Orange, and LA Counties)")
+
+#Change district names
+recfin_data_merge_total_mortality[,DISTRICT_NAME_LABEL := factor(DISTRICT_NAME, labels = district_labels)]
+
+ggplot(recfin_data_merge_total_mortality) +
+    geom_line(aes(x = RECFIN_YEAR, y = SUM_TOTAL_MORTALITY_NUM_ANNUAL/1000, color = RECFIN_MODE_NAME, linetype = shore_boat)) +
+    scale_x_continuous(breaks = seq(2005,2025,by = 5), limits = c(2005,2025)) +
+    scale_color_manual(values = c("#B276C2","#E28080","#78A7CF","#88C89A")) +
+    scale_linetype_manual(values = c("solid","dashed")) +
+    facet_wrap(~DISTRICT_NAME_LABEL, ncol = 1, labeller = labeller(district_labels), scales = "free") +
+    labs(x = "Year",y = "Total mortality (count in 1000s)", color = "Fishing mode", linetype = "Fishing location") +
+      theme_classic()
+    
+```
+
+
+```{r,  echo=FALSE, warning=FALSE, fig.dim = c(7, 8), fig.cap = "RecFin total estimated fishing mortality by weight. Note different y-axis scale for each district. Color specifies fishing mode, line type specifies fishing mode location."}
+ggplot(recfin_data_merge_total_mortality) +
+    geom_line(aes(x = RECFIN_YEAR, y = SUM_TOTAL_MORTALITY_MT_ANNUAL, color = RECFIN_MODE_NAME, linetype = shore_boat)) +
+    scale_x_continuous(breaks = seq(2005,2025,by = 5), limits = c(2005,2025)) +
+    scale_color_manual(values = c("#B276C2","#E28080","#78A7CF","#88C89A")) +
+    scale_linetype_manual(values = c("solid","dashed")) +
+    facet_wrap(~DISTRICT_NAME_LABEL, ncol = 1, labeller = labeller(district_labels), scales = "free") +
+    labs(x = "Year",y = "Total mortality (metric tonnes)", color = "Fishing mode", linetype = "Fishing location") +
+    theme_classic()
+```
+
+
+
+### Identify most common species
+
+
+
+```{r,  echo=FALSE, warning=FALSE}
+mortality_totals <- recfin_data_merge[,.(SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s = 
+                                                             sum(SUM_TOTAL_MORTALITY_NUM/1000, na.rm = T),
+                                                            SUM_TOTAL_MORTALITY_MT_ALLYEARS = 
+                                                             sum(SUM_TOTAL_MORTALITY_MT, na.rm = T)),
+                                                       by = .(SPECIES_NAME)]
+
+#Top species by count
+setkey(mortality_totals, SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s)
+mortality_totals_count <- data.table(tail(mortality_totals,10))
+
+#Top species by weight
+setkey(mortality_totals, SUM_TOTAL_MORTALITY_MT_ALLYEARS)
+mortality_totals_weight <- data.table(tail(mortality_totals,10))
+
+#Round and format
+mortality_totals_weight[,`Total mortality 2004-2024 (metric tonnes)` := round(SUM_TOTAL_MORTALITY_MT_ALLYEARS,0)][,SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s := NULL][,SUM_TOTAL_MORTALITY_MT_ALLYEARS := NULL][,rank := c(10:1)]
+setnames(mortality_totals_weight, old = "SPECIES_NAME",new = "Species")
+setkey(mortality_totals_weight, rank)
+mortality_totals_weight[,rank := NULL]
+
+mortality_totals_count[,`Total mortality 2004-2024 (count in 1000s)` := round(SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s,0)][,SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s := NULL][,SUM_TOTAL_MORTALITY_MT_ALLYEARS := NULL][,rank := c(10:1)]
+setnames(mortality_totals_count, old = "SPECIES_NAME",new = "Species")
+setkey(mortality_totals_count, rank)
+mortality_totals_count[,rank := NULL]
+
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+knitr::kable(mortality_totals_count,format = "html", caption = "Top species (by count) across both districts and all fishing modes.") |> row_spec(row = 0, bold = T)
+```
+
+
+```{r,  echo=FALSE, warning=FALSE}
+knitr::kable(mortality_totals_weight,format = "html", caption = "Top species (by weight) across both districts and all fishing modes.") |> row_spec(row = 0, bold = T)
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+#Calculate again, but only for SD, Orange, and LA counties
+SouthDistrict_estimated_mortality <- recfin_data_merge[DISTRICT_NAME == "South (San Diego, Orange And Los Angeles Counties)"]
+
+SouthDistrict_mortality_totals <- SouthDistrict_estimated_mortality[,.(SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s = 
+                                                             sum(SUM_TOTAL_MORTALITY_NUM/1000, na.rm = T),
+                                                            SUM_TOTAL_MORTALITY_MT_ALLYEARS = 
+                                                             sum(SUM_TOTAL_MORTALITY_MT, na.rm = T)),
+                                                       by = .(SPECIES_NAME)]
+
+#Top species by count
+setkey(SouthDistrict_mortality_totals, SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s)
+SouthDistrict_mortality_totals_count <- data.table(tail(SouthDistrict_mortality_totals,10))
+
+#Top species by weight
+setkey(SouthDistrict_mortality_totals, SUM_TOTAL_MORTALITY_MT_ALLYEARS)
+SouthDistrict_mortality_totals_weight <- data.table(tail(SouthDistrict_mortality_totals,10))
+
+#Round and format
+SouthDistrict_mortality_totals_weight[,`Total mortality South District 2004-2024 (metric tonnes)` := round(SUM_TOTAL_MORTALITY_MT_ALLYEARS,0)][,SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s := NULL][,SUM_TOTAL_MORTALITY_MT_ALLYEARS := NULL][,rank := c(10:1)]
+setnames(SouthDistrict_mortality_totals_weight, old = "SPECIES_NAME",new = "Species")
+setkey(SouthDistrict_mortality_totals_weight, rank)
+SouthDistrict_mortality_totals_weight[,rank := NULL]
+
+SouthDistrict_mortality_totals_count[,`Total mortality South District 2004-2024 (count in 1000s)` := round(SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s,0)][,SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s := NULL][,SUM_TOTAL_MORTALITY_MT_ALLYEARS := NULL][,rank := c(10:1)]
+setnames(SouthDistrict_mortality_totals_count, old = "SPECIES_NAME",new = "Species")
+setkey(SouthDistrict_mortality_totals_count, rank)
+SouthDistrict_mortality_totals_count[,rank := NULL]
+
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+knitr::kable(SouthDistrict_mortality_totals_count, format = "html", caption = "Top species (by count) for all fishing modes in South District (LA, SD, OC Counties).") |> row_spec(row = 0, bold = T)
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+knitr::kable(SouthDistrict_mortality_totals_weight, format = "html", caption = "Top species (by weight) for all fishing modes in South District (LA, SD, OC Counties).") |> row_spec(row = 0, bold = T)
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+#Calculate again, but only for SD, Orange, and LA counties
+SouthDistrict_ShoreMode_estimated_mortality <- recfin_data_merge[DISTRICT_NAME == "South (San Diego, Orange And Los Angeles Counties)" & shore_boat == "Shore-based"]
+
+SouthDistrict_ShoreMode_mortality_totals <- SouthDistrict_ShoreMode_estimated_mortality[,.(SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s = 
+                                                             sum(SUM_TOTAL_MORTALITY_NUM/1000, na.rm = T),
+                                                            SUM_TOTAL_MORTALITY_MT_ALLYEARS = 
+                                                             sum(SUM_TOTAL_MORTALITY_MT, na.rm = T)),
+                                                       by = .(SPECIES_NAME)]
+
+#Top species by count
+setkey(SouthDistrict_ShoreMode_mortality_totals, SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s)
+SouthDistrict_ShoreMode_mortality_totals_count <- data.table(tail(SouthDistrict_ShoreMode_mortality_totals,10))
+
+#Top species by weight
+setkey(SouthDistrict_ShoreMode_mortality_totals, SUM_TOTAL_MORTALITY_MT_ALLYEARS)
+SouthDistrict_ShoreMode_mortality_totals_weight <- data.table(tail(SouthDistrict_ShoreMode_mortality_totals,10))
+
+#Round and format
+SouthDistrict_ShoreMode_mortality_totals_weight[,`Total shore-based mortality South District 2004-2024 (metric tonnes)` := round(SUM_TOTAL_MORTALITY_MT_ALLYEARS,0)][,SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s := NULL][,SUM_TOTAL_MORTALITY_MT_ALLYEARS := NULL][,rank := c(10:1)]
+setnames(SouthDistrict_ShoreMode_mortality_totals_weight, old = "SPECIES_NAME",new = "Species")
+setkey(SouthDistrict_ShoreMode_mortality_totals_weight, rank)
+SouthDistrict_ShoreMode_mortality_totals_weight[,rank := NULL]
+
+SouthDistrict_ShoreMode_mortality_totals_count[,`Total shore-based mortality South District 2004-2024 (count in 1000s)` := round(SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s,0)][,SUM_TOTAL_MORTALITY_NUM_ALLYEARS_1000s := NULL][,SUM_TOTAL_MORTALITY_MT_ALLYEARS := NULL][,rank := c(10:1)]
+setnames(SouthDistrict_ShoreMode_mortality_totals_count, old = "SPECIES_NAME",new = "Species")
+setkey(SouthDistrict_ShoreMode_mortality_totals_count, rank)
+SouthDistrict_ShoreMode_mortality_totals_count[,rank := NULL]
+
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+knitr::kable(SouthDistrict_ShoreMode_mortality_totals_count, format = "html", caption = "Top species (by count) for shore-based fishing modes in South District (LA, SD, OC Counties).") |> row_spec(row = 0, bold = T)
+
+```
+
+```{r,  echo=FALSE, warning=FALSE}
+knitr::kable(SouthDistrict_ShoreMode_mortality_totals_weight, format = "html", caption = "Top species (by weight) for shore-based fishing modes in South District (LA, SD, OC Counties).") |> row_spec(row = 0, bold = T)
+```
+
+
+
+### Visualize time series of most common species in South District caught using shore-based methods (Beach/Pier/Jetty).
+
+```{r,  echo=FALSE, warning=FALSE}
+SouthDistrict_ShoreMode_TopSpp <- unique(c(SouthDistrict_ShoreMode_mortality_totals_weight$Species, SouthDistrict_ShoreMode_mortality_totals_count$Species))
+
+```
+
+
+```{r,  echo=FALSE, warning=FALSE}
+#Sum if not in top for shore-based fishing in South District, plot time-series of counts and weights as areas.
+SouthDistrict_ShoreMode_estimated_mortality[,SPECIES_NAME_TOP_SOUTHDISTRICT_SHOREBASED := ifelse(SPECIES_NAME %in% SouthDistrict_ShoreMode_TopSpp,SPECIES_NAME,"Other")]
+
+#Sum across new spp designations
+#Unique rows for total count and weight of each species per year per mode
+SouthDistrict_ShoreMode_estimated_mortality.r <- SouthDistrict_ShoreMode_estimated_mortality[,.(SUM_TOTAL_MORTALITY_NUM_ANNUAL = 
+                                                             sum(SUM_TOTAL_MORTALITY_NUM, na.rm = T),
+                                                            SUM_TOTAL_MORTALITY_MT_ANNUAL = 
+                                                             sum(SUM_TOTAL_MORTALITY_MT, na.rm = T)),
+                                                       by = .(RECFIN_YEAR,SPECIES_NAME_TOP_SOUTHDISTRICT_SHOREBASED, shore_boat, mode_label, RECFIN_MODE_NAME)]
+
+
+#Set order of spp for plotting
+most_common_spp_wother <- c(rev(SouthDistrict_ShoreMode_TopSpp),"Other")
+
+SouthDistrict_ShoreMode_estimated_mortality.r[,SPECIES_NAME_TOP := factor(SPECIES_NAME_TOP_SOUTHDISTRICT_SHOREBASED,levels = most_common_spp_wother)]
+
+#Color palette
+pal <- c("#FF6B6B",
+      "#6B8E23",
+      "#4682B4",
+      "#DDA0DD",
+      "#FFA07A",
+      "#20B2AA",
+      "#FF8C00",
+      "#9370DB",
+      "#32CD32",
+      "#DC143C",
+      "#8B4513", 
+      "#00CED1",
+      "#FFD700",
+      "#FF1493",
+      "black",
+      "darkgrey")
+
+
+#Count plot
+SouthDistrict_ShoreMode_TimeSeries_AreaPlot_Count <- ggplot(data = SouthDistrict_ShoreMode_estimated_mortality.r, aes(x = RECFIN_YEAR, SUM_TOTAL_MORTALITY_NUM_ANNUAL/1000,
+                                                 fill = SPECIES_NAME_TOP, label = SPECIES_NAME_TOP, color = SPECIES_NAME_TOP)) +
+  geom_area() +
+  scale_fill_manual(values=pal) +
+  scale_color_manual(values=pal) +
+    scale_x_continuous(breaks = seq(2005,2025,by = 5), limits = c(2005,2025)) +
+  scale_y_continuous(expand = c(0,0)) +
+    facet_wrap(~RECFIN_MODE_NAME, scales = "free", ncol = 1)+
+        labs(x = "Year",y = "Total mortality (count in 1000s)", color = "Species", fill = "Species",label = "Species") +
+    theme_classic() +
+    theme(legend.position = "top", legend.direction = "horizontal")
+
+#Weight plot
+SouthDistrict_ShoreMode_TimeSeries_AreaPlot_Weight <- ggplot(data = SouthDistrict_ShoreMode_estimated_mortality.r, aes(x = RECFIN_YEAR, SUM_TOTAL_MORTALITY_MT_ANNUAL,
+                                                 fill = SPECIES_NAME_TOP, label = SPECIES_NAME_TOP, color = SPECIES_NAME_TOP)) +
+  geom_area() +
+  scale_fill_manual(values=pal) +
+  scale_color_manual(values=pal) +
+    scale_x_continuous(breaks = seq(2005,2025,by = 5), limits = c(2005,2025)) +
+  scale_y_continuous(expand = c(0,0)) +
+    facet_wrap(~RECFIN_MODE_NAME, scales = "free", ncol = 1)+
+        labs(x = "Year",y = "Total mortality (metric tonnes)", color = "Species", fill = "Species",label = "Species") +
+    theme_classic() +
+    theme(legend.position = "top", legend.direction = "horizontal")
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE, fig.dim = c(7, 8), fig.cap = "RecFin total estimated mortality count for shore-based fishing in the South District. All species not in the top ten by either count or weight are grouped as Other. Note different y-axis scale for mode. Color identifies species."}
+SouthDistrict_ShoreMode_TimeSeries_AreaPlot_Count
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE, fig.dim = c(7, 8), fig.cap = "RecFin total estimated mortality weight for shore-based fishing in the South District. All species not in the top ten by either count or weight are grouped as Other. Note different y-axis scale for mode. Color identifies species."}
+SouthDistrict_ShoreMode_TimeSeries_AreaPlot_Weight
+```
+
+
+```{r,  echo=FALSE, warning=FALSE}
+
+#Species name label edit (add returns)
+SouthDistrict_ShoreMode_estimated_mortality.r[,SPECIES_NAME_TOP_longlabel := gsub(" ","\n",SPECIES_NAME_TOP)]
+
+#Count plot
+SouthDistrict_ShoreMode_TimeSeries_LinePlot_Count <- ggplot(data = SouthDistrict_ShoreMode_estimated_mortality.r[SPECIES_NAME_TOP != "Other"], aes(x = RECFIN_YEAR, SUM_TOTAL_MORTALITY_NUM_ANNUAL/1000, label = SPECIES_NAME_TOP, color = SPECIES_NAME_TOP)) +
+  geom_line(linewidth = 1) +
+    geom_rug(sides = "b") +
+  scale_fill_manual(values=pal) +
+  scale_color_manual(values=pal) +
+    scale_x_continuous(breaks = seq(2005,2025,by = 5), limits = c(2005,2025)) +
+  scale_y_continuous(expand = c(0,0)) +
+    facet_grid(SPECIES_NAME_TOP_longlabel~RECFIN_MODE_NAME, scales = "free")+
+labs(x = "Year",y = "Total mortality (count in 1000s)", color = "Species", fill = "Species",label = "Species") +
+    theme_classic() +
+        theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.05),  # Adds axis lines
+    strip.text.y = element_text(size = 6)  # Makes y-axis strip text smaller
+  )
+
+#Weight plot
+SouthDistrict_ShoreMode_TimeSeries_LinePlot_Weight <- ggplot(data = SouthDistrict_ShoreMode_estimated_mortality.r[SPECIES_NAME_TOP != "Other"], aes(x = RECFIN_YEAR, SUM_TOTAL_MORTALITY_MT_ANNUAL, label = SPECIES_NAME_TOP, color = SPECIES_NAME_TOP)) +
+  geom_line(linewidth = 1) +
+    geom_rug(sides = "b") +
+  scale_fill_manual(values=pal) +
+  scale_color_manual(values=pal) +
+    scale_x_continuous(breaks = seq(2005,2025,by = 5), limits = c(2005,2025)) +
+    facet_grid(SPECIES_NAME_TOP_longlabel~RECFIN_MODE_NAME, scales = "free")+
+        labs(x = "Year",y = "Total mortality (metric tonnes)", color = "Species", fill = "Species",label = "Species") +
+    theme_classic() +
+    theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.05),  # Adds axis lines
+    strip.text.y = element_text(size = 6)  # Makes y-axis strip text smaller
+  )
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE,message = FALSE, fig.dim = c(7, 8), fig.cap = "Total estimated mortality (count) for most commonly harvested species (by either weight or count) using shore-based fishing methods in the South District. Data from RecFin. Note different y-axis scale across species. Color identifies species."}
+SouthDistrict_ShoreMode_TimeSeries_LinePlot_Count
+
+```
+
+```{r, echo=FALSE, warning=FALSE, fig.dim = c(7, 8),message = FALSE, fig.cap = "Total estimated mortality (weight) for most commonly harvested species (by either weight or count) using shore-based fishing methods in the South District. Data from RecFin. Note different y-axis scale across species. Color identifies species."}
+
+SouthDistrict_ShoreMode_TimeSeries_LinePlot_Weight
+```
+
+
+I'm not immediately worried about changes in ID over time for any top species. It would be different if we were looking at rockfish, but no rockfish caught from shore.
